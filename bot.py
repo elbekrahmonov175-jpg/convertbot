@@ -1,121 +1,60 @@
-import asyncio
-import logging
-import subprocess
-import tempfile
+#!/usr/bin/env python3
+import asyncio, logging, os, subprocess, tempfile
 from pathlib import Path
-
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import (
-Application,
-CommandHandler,
-ContextTypes,
-MessageHandler,
-filters,
-)
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-BOT_TOKEN = “8632611940:AAEMcZqqs6-cXfunzW0aBlJ77BQ6-1QWHo0”
+BOT_TOKEN = os.environ.get(‘BOT_TOKEN’, ‘8632611940:AAEMcZqqs6-cXfunzW0aBlJ77BQ6-1QWHo0’)
 
-logging.basicConfig(
-format=”%(asctime)s | %(levelname)s | %(message)s”,
-level=logging.INFO,
-)
+logging.basicConfig(format=’%(asctime)s %(levelname)s %(message)s’, level=logging.INFO)
 log = logging.getLogger(**name**)
 
-def convert_mts_to_mp4(src: Path, dst: Path):
-cmd = [
-“ffmpeg”, “-y”,
-“-i”, str(src),
-“-c:v”, “copy”,
-“-c:a”, “aac”,
-“-b:a”, “192k”,
-str(dst),
-]
-result = subprocess.run(cmd, capture_output=True, text=True)
-if result.returncode != 0:
-return False, result.stderr[-500:]
-return True, “”
+def convert(src: Path, dst: Path):
+r = subprocess.run([‘ffmpeg’, ‘-y’, ‘-i’, str(src), ‘-c:v’, ‘copy’, ‘-c:a’, ‘aac’, str(dst)], capture_output=True, text=True)
+return r.returncode == 0, r.stderr[-400:]
 
-def human_size(path: Path) -> str:
-size = path.stat().st_size
-for unit in (“B”, “KB”, “MB”, “GB”):
-if size < 1024:
-return f”{size:.1f} {unit}”
-size /= 1024
-return f”{size:.1f} TB”
+def sz(p: Path):
+s = p.stat().st_size
+for u in (‘B’, ‘KB’, ‘MB’, ‘GB’):
+if s < 1024: return f’{s:.1f}’ + ’ ’ + u
+s /= 1024
+return str(s)
 
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-await update.message.reply_text(
-“MTS -> MP4 Converter\n\nОтправь файл .MTS - получишь .MP4.”,
-)
+async def start(u, c): await u.message.reply_text(‘MTS->MP4 бот. Отправь .MTS файл как документ.’)
 
-async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-await update.message.reply_text(
-“Отправь файл .MTS как документ - бот вернёт .MP4.\n\n”
-“/start - приветствие\n/help - справка”
-)
+async def doc(u: Update, c: ContextTypes.DEFAULT_TYPE):
+d = u.message.document
+fn = d.file_name or ‘’
+if not fn.lower().endswith(’.mts’):
+await u.message.reply_text(‘Нужен файл .MTS’); return
+msg = await u.message.reply_text(f’Скачиваю {fn}…’)
+with tempfile.TemporaryDirectory() as td:
+tmp = Path(td)
+src = tmp / fn
+dst = tmp / (Path(fn).stem + ‘.mp4’)
+try:
+tf = await c.bot.get_file(d.file_id)
+await tf.download_to_drive(str(src))
+except Exception as e:
+await msg.edit_text(f’Ошибка скачивания: {e}’); return
+await msg.edit_text(‘Конвертирую…’)
+ok, err = await asyncio.get_event_loop().run_in_executor(None, convert, src, dst)
+if not ok:
+await msg.edit_text(f’Ошибка ffmpeg: {err}’); return
+await msg.edit_text(f’Отправляю {dst.name}…’)
+with open(dst, ‘rb’) as f:
+await u.message.reply_document(f, filename=dst.name, caption=‘Готово!’)
+await msg.delete()
 
-async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-doc = update.message.document
-filename = doc.file_name or “”
+async def other(u, c): await u.message.reply_text(‘Отправь .MTS файл как документ’)
 
-```
-if not filename.lower().endswith(".mts"):
-    await update.message.reply_text("Отправь файл с расширением .MTS")
-    return
-
-size_mb = doc.file_size / 1024 / 1024
-status_msg = await update.message.reply_text(
-    f"Получаю {filename} ({size_mb:.1f} MB)..."
-)
-
-with tempfile.TemporaryDirectory() as tmp_dir:
-    tmp = Path(tmp_dir)
-    src = tmp / filename
-    dst = tmp / (Path(filename).stem + ".mp4")
-
-    try:
-        tg_file = await ctx.bot.get_file(doc.file_id)
-        await tg_file.download_to_drive(str(src))
-    except Exception as e:
-        await status_msg.edit_text(f"Ошибка скачивания: {e}")
-        return
-
-    await status_msg.edit_text(f"Конвертирую {filename}...")
-
-    loop = asyncio.get_event_loop()
-    ok, err = await loop.run_in_executor(None, convert_mts_to_mp4, src, dst)
-
-    if not ok:
-        await status_msg.edit_text(f"Ошибка конвертации:\n{err}")
-        return
-
-    out_name = dst.name
-    await status_msg.edit_text(f"Отправляю {out_name} ({human_size(dst)})...")
-
-    try:
-        with open(dst, "rb") as f:
-            await update.message.reply_document(
-                document=f,
-                filename=out_name,
-                caption=f"Готово! {filename} -> {out_name}",
-            )
-        await status_msg.delete()
-    except Exception as e:
-        await status_msg.edit_text(f"Ошибка отправки: {e}")
-```
-
-async def handle_other(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-await update.message.reply_text(“Отправь файл .MTS как документ. /help - справка”)
-
-def main() -> None:
+def main():
 app = Application.builder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler(“start”, cmd_start))
-app.add_handler(CommandHandler(“help”, cmd_help))
-app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-app.add_handler(MessageHandler(filters.ALL, handle_other))
-log.info(“Бот запущен…”)
+app.add_handler(CommandHandler(‘start’, start))
+app.add_handler(MessageHandler(filters.Document.ALL, doc))
+app.add_handler(MessageHandler(filters.ALL, other))
+log.info(‘Bot started’)
 app.run_polling(drop_pending_updates=True)
 
-if **name** == “**main**”:
-main()
+if **name** == ‘**main**’: main()
