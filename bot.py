@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-BOT_TOKEN = os.environ.get(‘BOT_TOKEN’, ‘8632611940:AAEMcZqqs6-cXfunzW0aBlJ77BQ6-1QWHo0’)
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8632611940:AAEMcZqqs6-cXfunzW0aBlJ77BQ6-1QWHo0')
 
 logging.basicConfig(format=’%(asctime)s %(levelname)s %(message)s’, level=logging.INFO)
 log = logging.getLogger(**name**)
