@@ -7,61 +7,90 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import aiohttp
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
-# 👉 ВАЖНО: вставь свой токен
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8632611940:AAEMcZqqs6-cXfunzW0aBlJ77BQ6-1QWHo0")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     level=logging.INFO
 )
+
 log = logging.getLogger(__name__)
 
 
+# ---------- CONVERT ----------
 def convert(src: Path, dst: Path):
-    """Конвертация MTS -> MP4 через ffmpeg"""
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(src), "-c:v", "copy", "-c:a", "aac", str(dst)],
-        capture_output=True,
-        text=True
-    )
-    return result.returncode == 0, result.stderr[-400:]
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(src),
+                "-preset", "ultrafast",
+                "-c:v", "libx264",
+                "-c:a", "aac",
+                str(dst)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3600
+        )
+        return result.returncode == 0, result.stderr[-400:]
+    except subprocess.TimeoutExpired:
+        return False, "Timeout ffmpeg"
 
 
+# ---------- DOWNLOAD (FAST + LARGE FILE SUPPORT) ----------
+async def download_file(file_url: str, dest: Path):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(file_url) as resp:
+            if resp.status != 200:
+                raise Exception(f"Download failed: {resp.status}")
+
+            with open(dest, "wb") as f:
+                while True:
+                    chunk = await resp.content.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+
+# ---------- START ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Отправь .MTS файл как документ — я конвертирую в MP4"
+        "📩 Отправь .MTS файл как документ — я конвертирую в MP4"
     )
 
 
-async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- HANDLER ----------
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    filename = doc.file_name or ""
+    name = doc.file_name or ""
 
-    if not filename.lower().endswith(".mts"):
-        await update.message.reply_text("❌ Нужен файл .MTS")
+    if not name.lower().endswith(".mts"):
+        await update.message.reply_text("❌ Только .MTS файлы")
         return
 
-    msg = await update.message.reply_text(f"⬇️ Скачиваю {filename}...")
+    msg = await update.message.reply_text("📥 Получаю файл...")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        src = tmp / filename
-        dst = tmp / (Path(filename).stem + ".mp4")
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        src = td / name
+        dst = td / (Path(name).stem + ".mp4")
 
         try:
-            file = await context.bot.get_file(doc.file_id)
-            await file.download_to_drive(str(src))
+            tg_file = await context.bot.get_file(doc.file_id)
+
+            # 🔥 ВАЖНО: используем прямую ссылку
+            file_url = tg_file.file_path
+
+            await msg.edit_text("⬇️ Скачиваю файл...")
+            await download_file(file_url, src)
+
         except Exception as e:
-            await msg.edit_text(f"❌ Ошибка скачивания: {e}")
+            await msg.edit_text(f"❌ Ошибка скачивания:\n{e}")
             return
 
         await msg.edit_text("⚙️ Конвертирую...")
@@ -73,27 +102,29 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Ошибка ffmpeg:\n{err}")
             return
 
-        await msg.edit_text("📤 Отправляю файл...")
+        await msg.edit_text("📤 Отправляю MP4...")
 
         with open(dst, "rb") as f:
             await update.message.reply_document(
                 document=f,
                 filename=dst.name,
-                caption="✅ Готово!"
+                caption="✅ Готово"
             )
 
         await msg.delete()
 
 
+# ---------- FALLBACK ----------
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Отправь .MTS файл как документ")
+    await update.message.reply_text("📩 Отправь .MTS файл")
 
 
+# ---------- MAIN ----------
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_doc))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     log.info("Bot started")
