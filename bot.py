@@ -35,10 +35,13 @@ def convert(src: Path, dst: Path):
             [
                 "ffmpeg", "-y",
                 "-i", str(src),
+                "-map", "0:v:0",
+                "-map", "0:a?",
                 "-c:v", "libx264",
                 "-crf", "23",
                 "-preset", "ultrafast",
                 "-c:a", "aac",
+                "-ac", "2",
                 "-b:a", "128k",
                 "-threads", "0",
                 str(dst)
