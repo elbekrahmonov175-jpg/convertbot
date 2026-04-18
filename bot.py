@@ -19,7 +19,14 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-app = Client("convertbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(
+    "convertbot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    workdir="/tmp",
+    max_concurrent_transmissions=1,
+)
 
 # ---------- CONVERT ----------
 def convert(src: Path, dst: Path):
@@ -29,12 +36,10 @@ def convert(src: Path, dst: Path):
                 "ffmpeg", "-y",
                 "-i", str(src),
                 "-c:v", "libx264",
-                "-crf", "32",
-                "-preset", "ultrafast",
-                "-tune", "fastdecode",
-                "-vf", "scale=1280:-2",
+                "-crf", "18",
+                "-preset", "fast",
                 "-c:a", "aac",
-                "-b:a", "96k",
+                "-b:a", "192k",
                 "-threads", "0",
                 str(dst)
             ],
@@ -82,13 +87,15 @@ async def handle(client: Client, message: Message):
             await msg.edit_text(f"❌ Ошибка ffmpeg:\n{err}")
             return
 
-        await msg.edit_text("📤 Отправляю MP4...")
+        size_mb = dst.stat().st_size / 1024 / 1024
+        await msg.edit_text(f"📤 Отправляю MP4 ({size_mb:.1f} МБ)...")
+
         try:
             await client.send_document(
                 chat_id=message.chat.id,
                 document=str(dst),
                 file_name=dst.name,
-                caption="✅ Готово"
+                caption="✅ Готово",
             )
             await msg.delete()
         except Exception as e:
