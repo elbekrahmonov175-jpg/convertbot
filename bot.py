@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.errors import FloodWait
 
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
@@ -108,18 +109,25 @@ async def handle(client: Client, message: Message):
         size_mb = dst.stat().st_size / 1024 / 1024
         await msg.edit_text(f"📤 Отправляю MP4 ({size_mb:.1f} МБ)...")
 
-        try:
-            await client.send_document(
-                chat_id=message.chat.id,
-                document=str(dst),
-                file_name=dst.name,
-                caption="✅ Готово",
-                progress=progress,
-                progress_args=(msg, "📤 Отправляю..."),
-            )
-            await msg.delete()
-        except Exception as e:
-            await msg.edit_text(f"❌ Ошибка отправки:\n{e}")
+        for attempt in range(5):
+            try:
+                await client.send_document(
+                    chat_id=message.chat.id,
+                    document=str(dst),
+                    file_name=dst.name,
+                    caption="✅ Готово",
+                    progress=progress,
+                    progress_args=(msg, "📤 Отправляю..."),
+                )
+                await msg.delete()
+                break
+            except FloodWait as e:
+                wait = e.value + 2
+                await msg.edit_text(f"⏳ Telegram просит подождать {wait} сек...")
+                await asyncio.sleep(wait)
+            except Exception as e:
+                await msg.edit_text(f"❌ Ошибка отправки:\n{e}")
+                break
 
 # ---------- MAIN ----------
 if __name__ == "__main__":
