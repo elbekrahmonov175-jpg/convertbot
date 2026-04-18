@@ -25,7 +25,7 @@ app = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
     workdir="/tmp",
-    max_concurrent_transmissions=1,
+    max_concurrent_transmissions=4,
 )
 
 # ---------- CONVERT ----------
@@ -36,10 +36,10 @@ def convert(src: Path, dst: Path):
                 "ffmpeg", "-y",
                 "-i", str(src),
                 "-c:v", "libx264",
-                "-crf", "18",
-                "-preset", "fast",
+                "-crf", "23",
+                "-preset", "ultrafast",
                 "-c:a", "aac",
-                "-b:a", "192k",
+                "-b:a", "128k",
                 "-threads", "0",
                 str(dst)
             ],
@@ -50,6 +50,17 @@ def convert(src: Path, dst: Path):
         return result.returncode == 0, result.stderr[-400:]
     except subprocess.TimeoutExpired:
         return False, "Timeout ffmpeg"
+
+# ---------- PROGRESS ----------
+async def progress(current, total, msg, action):
+    pct = int(current * 100 / total)
+    bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+    mb_cur = current / 1024 / 1024
+    mb_tot = total / 1024 / 1024
+    try:
+        await msg.edit_text(f"{action}\n{bar} {pct}%\n{mb_cur:.1f} / {mb_tot:.1f} МБ")
+    except Exception:
+        pass
 
 # ---------- START ----------
 @app.on_message(filters.command("start"))
@@ -73,8 +84,12 @@ async def handle(client: Client, message: Message):
         dst = td / (Path(name).stem + ".mp4")
 
         try:
-            await msg.edit_text("⬇️ Скачиваю файл...")
-            await client.download_media(message, file_name=str(src))
+            await client.download_media(
+                message,
+                file_name=str(src),
+                progress=progress,
+                progress_args=(msg, "⬇️ Скачиваю..."),
+            )
         except Exception as e:
             await msg.edit_text(f"❌ Ошибка скачивания:\n{e}")
             return
@@ -96,6 +111,8 @@ async def handle(client: Client, message: Message):
                 document=str(dst),
                 file_name=dst.name,
                 caption="✅ Готово",
+                progress=progress,
+                progress_args=(msg, "📤 Отправляю..."),
             )
             await msg.delete()
         except Exception as e:
