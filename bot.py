@@ -24,9 +24,11 @@ def convert(src: Path, dst: Path):
             [
                 "ffmpeg", "-y",
                 "-i", str(src),
-                "-preset", "ultrafast",
                 "-c:v", "libx264",
+                "-crf", "28",
+                "-preset", "fast",
                 "-c:a", "aac",
+                "-b:a", "128k",
                 str(dst)
             ],
             capture_output=True,
@@ -75,13 +77,19 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await msg.edit_text("📤 Отправляю MP4...")
-        with open(dst, "rb") as f:
-            await update.message.reply_document(
-                document=f,
-                filename=dst.name,
-                caption="✅ Готово"
-            )
-        await msg.delete()
+        try:
+            with open(dst, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=dst.name,
+                    caption="✅ Готово",
+                    read_timeout=300,
+                    write_timeout=300,
+                    connect_timeout=60,
+                )
+            await msg.delete()
+        except Exception as e:
+            await msg.edit_text(f"❌ Ошибка отправки:\n{e}")
 
 # ---------- FALLBACK ----------
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -89,7 +97,14 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- MAIN ----------
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .read_timeout(300)
+        .write_timeout(300)
+        .connect_timeout(60)
+        .build()
+    )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle))
     app.add_handler(MessageHandler(filters.ALL, fallback))
