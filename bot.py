@@ -66,13 +66,40 @@ async def progress(current, total, msg, action):
     except Exception:
         pass
 
+# ---------- SAFE REPLY ----------
+async def safe_reply(message: Message, text: str):
+    for attempt in range(5):
+        try:
+            return await message.reply_text(text)
+        except FloodWait as e:
+            wait = e.value + 2
+            log.warning(f"FloodWait {wait}s на reply, жду...")
+            await asyncio.sleep(wait)
+        except Exception as e:
+            log.error(f"Ошибка reply: {e}")
+            return None
+
+# ---------- SAFE EDIT ----------
+async def safe_edit(msg, text: str):
+    for attempt in range(5):
+        try:
+            return await msg.edit_text(text)
+        except FloodWait as e:
+            wait = e.value + 2
+            log.warning(f"FloodWait {wait}s на edit, жду...")
+            await asyncio.sleep(wait)
+        except Exception:
+            return None
+
 # ---------- PROCESS ONE FILE ----------
 async def process_file(client: Client, message: Message, index: int, total: int):
     doc = message.document
     name = doc.file_name or "file.mts"
     prefix = f"[{index}/{total}] " if total > 1 else ""
 
-    msg = await message.reply_text(f"{prefix}📥 Получаю файл...")
+    msg = await safe_reply(message, f"{prefix}📥 Получаю файл...")
+    if not msg:
+        return
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -87,19 +114,19 @@ async def process_file(client: Client, message: Message, index: int, total: int)
                 progress_args=(msg, f"{prefix}⬇️ Скачиваю..."),
             )
         except Exception as e:
-            await msg.edit_text(f"{prefix}❌ Ошибка скачивания:\n{e}")
+            await safe_edit(msg, f"{prefix}❌ Ошибка скачивания:\n{e}")
             return
 
-        await msg.edit_text(f"{prefix}⚙️ Конвертирую...")
+        await safe_edit(msg, f"{prefix}⚙️ Конвертирую...")
         loop = asyncio.get_event_loop()
         ok, err = await loop.run_in_executor(None, convert, src, dst)
 
         if not ok:
-            await msg.edit_text(f"{prefix}❌ Ошибка ffmpeg:\n{err}")
+            await safe_edit(msg, f"{prefix}❌ Ошибка ffmpeg:\n{err}")
             return
 
         size_mb = dst.stat().st_size / 1024 / 1024
-        await msg.edit_text(f"{prefix}📤 Отправляю MP4 ({size_mb:.1f} МБ)...")
+        await safe_edit(msg, f"{prefix}📤 Отправляю MP4 ({size_mb:.1f} МБ)...")
 
         for attempt in range(5):
             try:
@@ -115,10 +142,10 @@ async def process_file(client: Client, message: Message, index: int, total: int)
                 break
             except FloodWait as e:
                 wait = e.value + 2
-                await msg.edit_text(f"{prefix}⏳ Подождите {wait} сек...")
+                await safe_edit(msg, f"{prefix}⏳ Подождите {wait} сек...")
                 await asyncio.sleep(wait)
             except Exception as e:
-                await msg.edit_text(f"{prefix}❌ Ошибка отправки:\n{e}")
+                await safe_edit(msg, f"{prefix}❌ Ошибка отправки:\n{e}")
                 break
 
 # ---------- QUEUE WORKER ----------
@@ -131,16 +158,20 @@ async def queue_worker(client: Client, chat_id: int):
             queue.task_done()
         except asyncio.TimeoutError:
             break
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 2)
         except Exception as e:
             log.error(f"Worker error: {e}")
             continue
-    del user_queues[chat_id]
-    del user_tasks[chat_id]
+    if chat_id in user_queues:
+        del user_queues[chat_id]
+    if chat_id in user_tasks:
+        del user_tasks[chat_id]
 
 # ---------- START ----------
 @app.on_message(filters.command("start"))
 async def start(client: Client, message: Message):
-    await message.reply_text(
+    await safe_reply(message,
         "📩 Отправь до 10 .MTS файлов как документы — я конвертирую их в MP4 по очереди"
     )
 
@@ -150,7 +181,7 @@ async def handle(client: Client, message: Message):
     doc = message.document
     name = doc.file_name or ""
     if not name.lower().endswith(".mts"):
-        await message.reply_text("❌ Только .MTS файлы")
+        await safe_reply(message, "❌ Только .MTS файлы")
         return
 
     chat_id = message.chat.id
@@ -161,12 +192,12 @@ async def handle(client: Client, message: Message):
     queue = user_queues[chat_id]
 
     if queue.full():
-        await message.reply_text("❌ Очередь полна — максимум 10 файлов за раз")
+        await safe_reply(message, "❌ Очередь полна — максимум 10 файлов за раз")
         return
 
     pos = queue.qsize() + 1
     await queue.put((message, pos, pos))
-    await message.reply_text(f"✅ Файл добавлен в очередь — позиция {pos}")
+    await safe_reply(message, f"✅ Файл добавлен в очередь — позиция {pos}")
 
     if chat_id not in user_tasks or user_tasks[chat_id].done():
         user_tasks[chat_id] = asyncio.create_task(queue_worker(client, chat_id))
