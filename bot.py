@@ -29,6 +29,10 @@ app = Client(
     max_concurrent_transmissions=4,
 )
 
+# Очередь файлов для каждого пользователя
+user_queues: dict[int, list] = {}
+user_tasks: dict[int, asyncio.Task] = {}
+
 # ---------- CONVERT ----------
 def convert(src: Path, dst: Path):
     try:
@@ -41,6 +45,8 @@ def convert(src: Path, dst: Path):
                 "-c:v", "libx264",
                 "-crf", "23",
                 "-preset", "ultrafast",
+                "-maxrate", "4M",
+                "-bufsize", "8M",
                 "-c:a", "aac",
                 "-ac", "2",
                 "-b:a", "128k",
@@ -66,21 +72,13 @@ async def progress(current, total, msg, action):
     except Exception:
         pass
 
-# ---------- START ----------
-@app.on_message(filters.command("start"))
-async def start(client: Client, message: Message):
-    await message.reply_text("📩 Отправь .MTS файл как документ — я конвертирую в MP4")
-
-# ---------- HANDLER ----------
-@app.on_message(filters.document)
-async def handle(client: Client, message: Message):
+# ---------- PROCESS ONE FILE ----------
+async def process_file(client: Client, message: Message, index: int, total: int):
     doc = message.document
-    name = doc.file_name or ""
-    if not name.lower().endswith(".mts"):
-        await message.reply_text("❌ Только .MTS файлы")
-        return
+    name = doc.file_name or "file.mts"
+    prefix = f"[{index}/{total}] " if total > 1 else ""
 
-    msg = await message.reply_text("📥 Получаю файл...")
+    msg = await message.reply_text(f"{prefix}📥 Получаю файл...")
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -92,22 +90,22 @@ async def handle(client: Client, message: Message):
                 message,
                 file_name=str(src),
                 progress=progress,
-                progress_args=(msg, "⬇️ Скачиваю..."),
+                progress_args=(msg, f"{prefix}⬇️ Скачиваю..."),
             )
         except Exception as e:
-            await msg.edit_text(f"❌ Ошибка скачивания:\n{e}")
+            await msg.edit_text(f"{prefix}❌ Ошибка скачивания:\n{e}")
             return
 
-        await msg.edit_text("⚙️ Конвертирую...")
+        await msg.edit_text(f"{prefix}⚙️ Конвертирую...")
         loop = asyncio.get_event_loop()
         ok, err = await loop.run_in_executor(None, convert, src, dst)
 
         if not ok:
-            await msg.edit_text(f"❌ Ошибка ffmpeg:\n{err}")
+            await msg.edit_text(f"{prefix}❌ Ошибка ffmpeg:\n{err}")
             return
 
         size_mb = dst.stat().st_size / 1024 / 1024
-        await msg.edit_text(f"📤 Отправляю MP4 ({size_mb:.1f} МБ)...")
+        await msg.edit_text(f"{prefix}📤 Отправляю MP4 ({size_mb:.1f} МБ)...")
 
         for attempt in range(5):
             try:
@@ -115,19 +113,70 @@ async def handle(client: Client, message: Message):
                     chat_id=message.chat.id,
                     document=str(dst),
                     file_name=dst.name,
-                    caption="✅ Готово",
+                    caption=f"✅ Готово {prefix}",
                     progress=progress,
-                    progress_args=(msg, "📤 Отправляю..."),
+                    progress_args=(msg, f"{prefix}📤 Отправляю..."),
                 )
                 await msg.delete()
                 break
             except FloodWait as e:
                 wait = e.value + 2
-                await msg.edit_text(f"⏳ Telegram просит подождать {wait} сек...")
+                await msg.edit_text(f"{prefix}⏳ Подождите {wait} сек...")
                 await asyncio.sleep(wait)
             except Exception as e:
-                await msg.edit_text(f"❌ Ошибка отправки:\n{e}")
+                await msg.edit_text(f"{prefix}❌ Ошибка отправки:\n{e}")
                 break
+
+# ---------- QUEUE WORKER ----------
+async def queue_worker(client: Client, chat_id: int):
+    queue = user_queues[chat_id]
+    while queue:
+        message, index, total = queue.pop(0)
+        await process_file(client, message, index, total)
+    del user_queues[chat_id]
+    del user_tasks[chat_id]
+
+# ---------- START ----------
+@app.on_message(filters.command("start"))
+async def start(client: Client, message: Message):
+    await message.reply_text(
+        "📩 Отправь до 10 .MTS файлов как документы — я конвертирую их в MP4 по очереди"
+    )
+
+# ---------- HANDLER ----------
+@app.on_message(filters.document)
+async def handle(client: Client, message: Message):
+    doc = message.document
+    name = doc.file_name or ""
+    if not name.lower().endswith(".mts"):
+        await message.reply_text("❌ Только .MTS файлы")
+        return
+
+    chat_id = message.chat.id
+
+    if chat_id not in user_queues:
+        user_queues[chat_id] = []
+
+    queue = user_queues[chat_id]
+
+    if len(queue) >= 10:
+        await message.reply_text("❌ Очередь полна — максимум 10 файлов за раз")
+        return
+
+    queue.append((message, len(queue) + 1, None))
+
+    # Обновляем номера
+    for i, (msg, _, _) in enumerate(queue):
+        queue[i] = (msg, i + 1, None)
+
+    total = len(queue)
+    for i, (msg, idx, _) in enumerate(queue):
+        queue[i] = (msg, idx, total)
+
+    await message.reply_text(f"✅ Файл добавлен в очередь — позиция {total}")
+
+    if chat_id not in user_tasks or user_tasks[chat_id].done():
+        user_tasks[chat_id] = asyncio.create_task(queue_worker(client, chat_id))
 
 # ---------- MAIN ----------
 if __name__ == "__main__":
