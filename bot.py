@@ -43,13 +43,11 @@ def convert(src: Path, dst: Path):
                 "-map", "0:v:0",
                 "-map", "0:a?",
                 "-c:v", "libx264",
-                "-crf", "23",
+                "-crf", "18",
                 "-preset", "ultrafast",
-                "-maxrate", "4M",
-                "-bufsize", "8M",
                 "-c:a", "aac",
                 "-ac", "2",
-                "-b:a", "128k",
+                "-b:a", "192k",
                 "-threads", "0",
                 str(dst)
             ],
@@ -165,7 +163,6 @@ async def handle(client: Client, message: Message):
 
     queue.append((message, len(queue) + 1, None))
 
-    # Обновляем номера
     for i, (msg, _, _) in enumerate(queue):
         queue[i] = (msg, i + 1, None)
 
