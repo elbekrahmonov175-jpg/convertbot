@@ -29,7 +29,7 @@ app = Client(
     max_concurrent_transmissions=4,
 )
 
-user_queues: dict[int, list] = {}
+user_queues: dict[int, asyncio.Queue] = {}
 user_tasks: dict[int, asyncio.Task] = {}
 
 # ---------- CONVERT ----------
@@ -124,9 +124,16 @@ async def process_file(client: Client, message: Message, index: int, total: int)
 # ---------- QUEUE WORKER ----------
 async def queue_worker(client: Client, chat_id: int):
     queue = user_queues[chat_id]
-    while queue:
-        message, index, total = queue.pop(0)
-        await process_file(client, message, index, total)
+    while True:
+        try:
+            message, index, total = await asyncio.wait_for(queue.get(), timeout=60)
+            await process_file(client, message, index, total)
+            queue.task_done()
+        except asyncio.TimeoutError:
+            break
+        except Exception as e:
+            log.error(f"Worker error: {e}")
+            continue
     del user_queues[chat_id]
     del user_tasks[chat_id]
 
@@ -149,24 +156,17 @@ async def handle(client: Client, message: Message):
     chat_id = message.chat.id
 
     if chat_id not in user_queues:
-        user_queues[chat_id] = []
+        user_queues[chat_id] = asyncio.Queue(maxsize=10)
 
     queue = user_queues[chat_id]
 
-    if len(queue) >= 10:
+    if queue.full():
         await message.reply_text("❌ Очередь полна — максимум 10 файлов за раз")
         return
 
-    queue.append((message, len(queue) + 1, None))
-
-    for i, (msg, _, _) in enumerate(queue):
-        queue[i] = (msg, i + 1, None)
-
-    total = len(queue)
-    for i, (msg, idx, _) in enumerate(queue):
-        queue[i] = (msg, idx, total)
-
-    await message.reply_text(f"✅ Файл добавлен в очередь — позиция {total}")
+    pos = queue.qsize() + 1
+    await queue.put((message, pos, pos))
+    await message.reply_text(f"✅ Файл добавлен в очередь — позиция {pos}")
 
     if chat_id not in user_tasks or user_tasks[chat_id].done():
         user_tasks[chat_id] = asyncio.create_task(queue_worker(client, chat_id))
