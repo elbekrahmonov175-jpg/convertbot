@@ -29,7 +29,6 @@ app = Client(
     max_concurrent_transmissions=4,
 )
 
-# Очередь файлов для каждого пользователя
 user_queues: dict[int, list] = {}
 user_tasks: dict[int, asyncio.Task] = {}
 
@@ -42,13 +41,10 @@ def convert(src: Path, dst: Path):
                 "-i", str(src),
                 "-map", "0:v:0",
                 "-map", "0:a?",
-                "-c:v", "libx264",
-                "-crf", "18",
-                "-preset", "ultrafast",
+                "-c:v", "copy",
                 "-c:a", "aac",
                 "-ac", "2",
-                "-b:a", "192k",
-                "-threads", "0",
+                "-b:a", "128k",
                 str(dst)
             ],
             capture_output=True,
