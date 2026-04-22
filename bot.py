@@ -43,10 +43,15 @@ def convert(src: Path, dst: Path):
                 "-i", str(src),
                 "-map", "0:v:0",
                 "-map", "0:a?",
-                "-c:v", "copy",
+                "-c:v", "libx264",
+                "-profile:v", "baseline",
+                "-level", "3.1",
+                "-preset", "fast",
+                "-crf", "23",
                 "-c:a", "aac",
                 "-ac", "2",
                 "-b:a", "128k",
+                "-movflags", "+faststart",
                 str(dst)
             ],
             capture_output=True,
@@ -177,18 +182,21 @@ async def queue_worker(client: Client, chat_id: int):
     while True:
         try:
             message, index, total = await asyncio.wait_for(queue.get(), timeout=60)
-            await process_file(client, message, index, total)
-            queue.task_done()
-            await asyncio.sleep(2.0)
         except asyncio.TimeoutError:
             break
+
+        try:
+            await process_file(client, message, index, total)
         except FloodWait as e:
             wait = e.value + random.randint(1, 5)
             log.warning(f"FloodWait {e.value}s в queue_worker (chat_id={chat_id}), жду {wait}s...")
             await asyncio.sleep(wait)
         except Exception as e:
-            log.error(f"Worker error: {e}")
-            continue
+            log.error(f"Worker error: {e}", exc_info=True)
+        finally:
+            queue.task_done()
+
+        await asyncio.sleep(2.0)
     if chat_id in user_queues:
         del user_queues[chat_id]
     if chat_id in user_tasks:
