@@ -28,7 +28,8 @@ app = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
     workdir="/tmp",
-    max_concurrent_transmissions=4,
+    max_concurrent_transmissions=1,  # не перегружать media DC
+    sleep_threshold=60,              # ждать до 60с при флудвейте вместо дисконнекта
 )
 
 user_queues: dict[int, asyncio.Queue] = {}
@@ -126,20 +127,44 @@ async def process_file(client: Client, message: Message, index: int, total: int)
     if not msg:
         return
 
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
+    with tempfile.TemporaryDirectory() as td_str:
+        td = Path(td_str)
         src = td / name
         dst = td / (Path(name).stem + ".mp4")
 
-        try:
-            await client.download_media(
-                message,
-                file_name=str(src),
-                progress=progress,
-                progress_args=(msg, f"{prefix}⬇️ Скачиваю..."),
-            )
-        except Exception as e:
-            await safe_edit(msg, f"{prefix}❌ Ошибка скачивания:\n{e}")
+        downloaded = False
+        for attempt in range(5):
+            try:
+                await safe_edit(msg, f"{prefix}⬇️ Скачиваю... (попытка {attempt + 1}/5)")
+                # Удаляем частично скачанный файл перед повтором
+                if src.exists():
+                    src.unlink()
+                await client.download_media(
+                    message,
+                    file_name=str(src),
+                    progress=progress,
+                    progress_args=(msg, f"{prefix}⬇️ Скачиваю..."),
+                )
+                if src.exists() and src.stat().st_size > 0:
+                    downloaded = True
+                    break
+                else:
+                    log.warning(f"Файл не скачался (попытка {attempt + 1}/5)")
+                    await asyncio.sleep(5)
+            except FloodWait as e:
+                wait = e.value + 5
+                log.warning(f"FloodWait {e.value}s при скачивании, жду {wait}s...")
+                await asyncio.sleep(wait)
+            except Exception as e:
+                log.warning(f"Ошибка скачивания (попытка {attempt + 1}/5): {e}")
+                if attempt < 4:
+                    await asyncio.sleep(5)
+                else:
+                    await safe_edit(msg, f"{prefix}❌ Ошибка скачивания после 5 попыток:\n{e}")
+                    return
+
+        if not downloaded:
+            await safe_edit(msg, f"{prefix}❌ Не удалось скачать файл после 5 попыток")
             return
 
         await asyncio.sleep(1.5)
