@@ -1,44 +1,57 @@
-import os
 import asyncio
-import subprocess
 import logging
+import os
 from pathlib import Path
-from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+
+from telethon import TelegramClient, events
+from telethon.tl.types import DocumentAttributeFilename
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+API_ID = 33897982
+API_HASH = "158332efe54c552a47fa6916fbcb30a5"
 BOT_TOKEN = "8632611940:AAHVx5AP2lxNhIWN1JQmjeO49fqdLfJT-O8"
+
 DOWNLOAD_DIR = Path("/tmp/mts_bot")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+
+@bot.on(events.NewMessage(pattern="/start"))
+async def start(event):
+    await event.reply(
         "👋 Привет! Я конвертирую MTS файлы в MP4 без потери качества и звука.\n\n"
-        "📎 Просто отправь мне MTS файл как документ — и я верну тебе MP4!"
+        "📎 Просто отправь мне MTS файл как документ — и я верну тебе MP4!\n\n"
+        "⚡ Лимит файла: до 2 ГБ"
     )
 
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-    filename = doc.file_name or "video"
+@bot.on(events.NewMessage(func=lambda e: e.document))
+async def handle_document(event):
+    doc = event.document
+    filename = ""
+
+    for attr in doc.attributes:
+        if isinstance(attr, DocumentAttributeFilename):
+            filename = attr.file_name
+            break
 
     if not filename.lower().endswith(".mts"):
-        await update.message.reply_text("❌ Это не MTS файл. Отправь файл с расширением .mts")
+        await event.reply("❌ Это не MTS файл. Отправь файл с расширением .mts")
         return
 
-    msg = await update.message.reply_text("⏳ Скачиваю файл...")
+    msg = await event.reply("⏳ Скачиваю файл...")
 
-    input_path = DOWNLOAD_DIR / f"{doc.file_id}.mts"
-    output_path = DOWNLOAD_DIR / f"{doc.file_id}.mp4"
+    file_id = str(doc.id)
+    input_path = DOWNLOAD_DIR / f"{file_id}.mts"
+    output_path = DOWNLOAD_DIR / f"{file_id}.mp4"
 
     try:
-        file = await context.bot.get_file(doc.file_id)
-        await file.download_to_drive(str(input_path))
+        await bot.download_media(event.message, file=str(input_path))
 
-        await msg.edit_text("🔄 Конвертирую MTS → MP4 (без потери качества)...")
+        await msg.edit("🔄 Конвертирую MTS → MP4 (без потери качества)...")
 
         cmd = [
             "ffmpeg", "-y",
@@ -58,24 +71,27 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if process.returncode != 0:
             logger.error(f"ffmpeg error: {stderr.decode()}")
-            await msg.edit_text("❌ Ошибка конвертации. Попробуй ещё раз.")
+            await msg.edit("❌ Ошибка конвертации. Попробуй ещё раз.")
             return
 
         out_filename = Path(filename).stem + ".mp4"
-        await msg.edit_text("📤 Отправляю MP4...")
+        file_size_mb = output_path.stat().st_size / (1024 * 1024)
 
-        with open(output_path, "rb") as f:
-            await update.message.reply_document(
-                document=f,
-                filename=out_filename,
-                caption="✅ Готово! MP4 без потери качества и звука."
-            )
+        await msg.edit(f"📤 Отправляю MP4 ({file_size_mb:.1f} МБ)...")
+
+        await bot.send_file(
+            event.chat_id,
+            str(output_path),
+            attributes=[DocumentAttributeFilename(out_filename)],
+            caption="✅ Готово! MP4 без потери качества и звука.",
+            reply_to=event.message.id
+        )
 
         await msg.delete()
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        await msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await msg.edit(f"❌ Ошибка: {str(e)}")
 
     finally:
         if input_path.exists():
@@ -84,13 +100,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             output_path.unlink()
 
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    logger.info("Bot started...")
-    app.run_polling()
+async def main():
+    logger.info("Bot started (Telethon, limit 2GB)...")
+    await bot.run_until_disconnected()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
