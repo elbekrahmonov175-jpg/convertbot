@@ -15,7 +15,7 @@ from pyrogram.errors import FloodWait
 API_ID   = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN      = os.environ.get("BOT_TOKEN", "")
-SESSION_STRING = os.environ.get("SESSION_STRING", "")   # userbot
+SESSION_STRING = os.environ.get("SESSION_STRING", "")   # userbot (опционально)
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
@@ -36,14 +36,16 @@ bot = Client(
 
 # ----- USERBOT (скачивание больших файлов) -----
 # Если SESSION_STRING не задан — скачивает бот (работает только для файлов <2 ГБ без обрывов)
-user = Client(
-    "userbot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    session_string=SESSION_STRING,
-    max_concurrent_transmissions=1,
-    sleep_threshold=120,
-) if SESSION_STRING else None
+user: Client | None = None
+if SESSION_STRING and SESSION_STRING.strip():
+    user = Client(
+        "userbot",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        session_string=SESSION_STRING.strip(),
+        max_concurrent_transmissions=1,
+        sleep_threshold=120,
+    )
 
 user_queues: dict[int, asyncio.Queue] = {}
 user_tasks:  dict[int, asyncio.Task]  = {}
@@ -88,7 +90,7 @@ async def progress(current, total, msg, action):
         return
     _progress_last_update[msg_id] = now
 
-    pct = int(current * 100 / total)
+    pct = int(current * 100 / total) if total else 0
     bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
     mb_cur = current / 1024 / 1024
     mb_tot = total / 1024 / 1024
@@ -134,10 +136,9 @@ async def safe_edit(msg, text: str):
 async def download_via_userbot(message: Message, src: Path, msg, prefix: str) -> bool:
     """
     Скачивает файл через userbot-клиент.
-    message — оригинальное сообщение из чата (от бота).
-    Userbot должен быть участником того же чата.
+    Поддерживает как прямые, так и пересланные сообщения.
     """
-    downloader = user  # userbot-клиент
+    downloader = user
 
     for attempt in range(5):
         try:
@@ -145,13 +146,36 @@ async def download_via_userbot(message: Message, src: Path, msg, prefix: str) ->
             if src.exists():
                 src.unlink()
 
-            # Получаем то же сообщение через userbot по chat_id + message_id
-            target_msg = await downloader.get_messages(
-                chat_id=message.chat.id,
-                message_ids=message.id
-            )
-            if not target_msg or not target_msg.document:
+            target_msg = None
+
+            # Если сообщение переслано — ищем оригинал
+            if message.forward_from_chat and message.forward_from_message_id:
+                try:
+                    target_msg = await downloader.get_messages(
+                        chat_id=message.forward_from_chat.id,
+                        message_ids=message.forward_from_message_id
+                    )
+                    log.info(f"Скачиваю оригинал из канала/чата {message.forward_from_chat.id}")
+                except Exception as e:
+                    log.warning(f"Не удалось получить оригинал пересланного сообщения: {e}")
+
+            # Если это пересланное сообщение от пользователя (forward_from, не канал)
+            # или не удалось получить оригинал — ищем в текущем чате
+            if not target_msg or not (target_msg.document or target_msg.video):
+                target_msg = await downloader.get_messages(
+                    chat_id=message.chat.id,
+                    message_ids=message.id
+                )
+
+            if not target_msg:
                 log.warning(f"Userbot не нашёл сообщение (попытка {attempt + 1}/5)")
+                await asyncio.sleep(5)
+                continue
+
+            # Проверяем наличие файла (document или video)
+            media = target_msg.document or target_msg.video
+            if not media:
+                log.warning(f"Userbot: в сообщении нет файла (попытка {attempt + 1}/5)")
                 await asyncio.sleep(5)
                 continue
 
@@ -215,8 +239,8 @@ async def download_via_bot(message: Message, src: Path, msg, prefix: str) -> boo
 
 # ---------- PROCESS ONE FILE ----------
 async def process_file(message: Message, index: int, total: int):
-    doc = message.document
-    name = doc.file_name or "file.mts"
+    doc = message.document or message.video
+    name = (doc.file_name if doc and doc.file_name else None) or "file.mts"
     prefix = f"[{index}/{total}] " if total > 1 else ""
 
     msg = await safe_reply(message, f"{prefix}📥 Получаю файл...")
@@ -229,6 +253,7 @@ async def process_file(message: Message, index: int, total: int):
         dst = td / (Path(name).stem + ".mp4")
 
         # Скачиваем через userbot если доступен, иначе через бота
+        downloaded = False
         if user:
             downloaded = await download_via_userbot(message, src, msg, prefix)
             if not downloaded:
@@ -238,7 +263,7 @@ async def process_file(message: Message, index: int, total: int):
             downloaded = await download_via_bot(message, src, msg, prefix)
 
         if not downloaded:
-            await safe_edit(msg, f"{prefix}❌ Не удалось скачать файл")
+            await safe_edit(msg, f"{prefix}❌ Не удалось скачать файл после 5 попыток")
             return
 
         await asyncio.sleep(1.5)
@@ -305,20 +330,30 @@ async def queue_worker(chat_id: int):
 # ---------- START ----------
 @bot.on_message(filters.command("start"))
 async def start(client: Client, message: Message):
-    mode = "userbot (большие файлы ✅)" if user else "бот (до ~1 ГБ)"
+    mode = "userbot (большие файлы ✅)" if user else "бот (до ~2 ГБ)"
     await safe_reply(message,
         f"📩 Отправь до 10 .MTS файлов как документы — конвертирую в MP4 по очереди\n"
         f"🔧 Режим скачивания: {mode}"
     )
 
 # ---------- HANDLER ----------
-@bot.on_message(filters.document)
+@bot.on_message(filters.document | filters.video)
 async def handle(client: Client, message: Message):
-    doc = message.document
-    name = doc.file_name or ""
-    if not name.lower().endswith(".mts"):
-        await safe_reply(message, "❌ Только .MTS файлы")
+    doc = message.document or message.video
+    if not doc:
         return
+
+    name = doc.file_name or ""
+    # Принимаем .mts и пересланные видео (у video нет расширения, но это MTS)
+    is_mts = name.lower().endswith(".mts")
+    is_forwarded_video = message.video and not name  # пересланное видео без имени файла
+
+    if not is_mts and not is_forwarded_video:
+        # Проверяем mime type для MTS
+        mime = getattr(doc, "mime_type", "") or ""
+        if "mts" not in mime.lower() and "m2ts" not in mime.lower() and not is_forwarded_video:
+            await safe_reply(message, "❌ Только .MTS файлы")
+            return
 
     chat_id = message.chat.id
 
@@ -331,7 +366,9 @@ async def handle(client: Client, message: Message):
         await safe_reply(message, "❌ Очередь полна — максимум 10 файлов за раз")
         return
 
+    # Правильный счётчик позиции
     pos = queue.qsize() + 1
+    total = pos  # будет обновлено при обработке
     await queue.put((message, pos, pos))
     await safe_reply(message, f"✅ Файл добавлен в очередь — позиция {pos}")
 
@@ -344,9 +381,13 @@ async def main():
 
     if user:
         log.info("Запускаю userbot...")
-        await user.start()
-        me = await user.get_me()
-        log.info(f"Userbot авторизован как: {me.first_name} (@{me.username})")
+        try:
+            await user.start()
+            me = await user.get_me()
+            log.info(f"Userbot авторизован как: {me.first_name} (@{me.username})")
+        except Exception as e:
+            log.error(f"Не удалось запустить userbot: {e}")
+            log.warning("Продолжаю только с ботом...")
     else:
         log.warning("SESSION_STRING не задан — скачивание только через бота")
 
