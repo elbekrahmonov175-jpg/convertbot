@@ -9,6 +9,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 from converter import convert_mts_to_mp4
 from queue_manager import ConversionQueue, JobStatus
@@ -28,16 +29,16 @@ ALLOWED_USERS = set(
 WORK_DIR = Path(os.environ.get("WORK_DIR", "/tmp/convertbot"))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_FILE_SIZE_MB = 2000  # Telegram Bot API limit
+MAX_FILE_SIZE_MB = 2000
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 queue = ConversionQueue(max_workers=2)
 
 
 def is_allowed(user_id: int) -> bool:
     if not ALLOWED_USERS:
-        return True  # если список пуст — доступ для всех
+        return True
     return user_id in ALLOWED_USERS
 
 
@@ -127,7 +128,6 @@ async def handle_document(message: Message):
         )
         return
 
-    # Проверка очереди пользователя
     user_jobs = queue.get_user_jobs(message.from_user.id)
     if len(user_jobs) >= 3:
         await message.answer(
@@ -147,7 +147,6 @@ async def handle_document(message: Message):
     output_path = WORK_DIR / f"{job_id}_output.mp4"
 
     try:
-        # Скачиваем файл
         download_start = time.time()
         await bot.download(doc, destination=input_path)
         download_time = time.time() - download_start
@@ -158,7 +157,6 @@ async def handle_document(message: Message):
             "⏳ Добавляю в очередь конвертации..."
         )
 
-        # Добавляем в очередь
         position = queue.add_job(
             job_id=job_id,
             user_id=message.from_user.id,
@@ -175,7 +173,6 @@ async def handle_document(message: Message):
                 "Я уведомлю вас когда начнётся конвертация."
             )
 
-        # Ждём завершения задачи
         result = await queue.wait_for_job(job_id)
 
         if result.status == JobStatus.DONE:
@@ -214,7 +211,6 @@ async def handle_document(message: Message):
             f"❌ <b>Неожиданная ошибка</b>\n\n<code>{str(e)}</code>"
         )
     finally:
-        # Удаляем временные файлы
         for path in [input_path, output_path]:
             try:
                 if path.exists():
