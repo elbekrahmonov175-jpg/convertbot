@@ -44,6 +44,7 @@ pyro = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     workdir="/tmp",
+    in_memory=True,
 )
 
 
