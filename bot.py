@@ -6,12 +6,11 @@ import uuid
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from pyrogram import Client
 
 from converter import convert_mts_to_mp4
 from queue_manager import ConversionQueue, JobStatus
@@ -23,6 +22,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
+API_ID = int(os.environ["TELEGRAM_API_ID"])
+API_HASH = os.environ["TELEGRAM_API_HASH"]
 ALLOWED_USERS_RAW = os.environ.get("ALLOWED_USERS", "")
 ALLOWED_USERS = set(
     int(uid.strip()) for uid in ALLOWED_USERS_RAW.split(",") if uid.strip().isdigit()
@@ -33,27 +34,18 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_FILE_SIZE_MB = 2000
 
-# Подключаемся к локальному Bot API Server (снимает лимит 20MB → 2000MB)
-USE_LOCAL_API = os.environ.get("USE_LOCAL_API", "true").lower() == "true"
-
-if USE_LOCAL_API:
-    local_server = TelegramAPIServer.from_base("http://localhost:8081")
-    session = AiohttpSession(api=local_server)
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-        session=session,
-    )
-    logger.info("Используется Local Bot API Server на порту 8081")
-else:
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    logger.info("Используется стандартный Telegram Bot API")
-
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 queue = ConversionQueue(max_workers=2)
+
+# Pyrogram клиент для скачивания больших файлов
+pyro = Client(
+    "convertbot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    workdir="/tmp",
+)
 
 
 def is_allowed(user_id: int) -> bool:
@@ -143,8 +135,7 @@ async def handle_document(message: Message):
     if file_size_mb > MAX_FILE_SIZE_MB:
         await message.answer(
             f"❌ Файл слишком большой: <b>{file_size_mb:.0f} MB</b>\n"
-            f"Максимум: <b>{MAX_FILE_SIZE_MB} MB</b>\n\n"
-            "⚠️ Это ограничение Telegram Bot API."
+            f"Максимум: <b>{MAX_FILE_SIZE_MB} MB</b>"
         )
         return
 
@@ -159,7 +150,7 @@ async def handle_document(message: Message):
     status_msg = await message.answer(
         f"📥 <b>Получен файл:</b> <code>{filename}</code>\n"
         f"📦 Размер: {format_size(doc.file_size)}\n\n"
-        "⬇️ Скачиваю файл..."
+        "⬇️ Скачиваю файл через MTProto..."
     )
 
     job_id = str(uuid.uuid4())[:8]
@@ -168,7 +159,31 @@ async def handle_document(message: Message):
 
     try:
         download_start = time.time()
-        await bot.download(doc, destination=input_path)
+
+        # Скачиваем через Pyrogram (без лимита 20MB)
+        last_update = [0.0]
+
+        async def progress(current, total):
+            now = time.time()
+            if now - last_update[0] < 5:
+                return
+            last_update[0] = now
+            pct = current / total * 100 if total else 0
+            try:
+                await status_msg.edit_text(
+                    f"⬇️ <b>Скачиваю файл...</b>\n"
+                    f"📦 {format_size(current)} / {format_size(total)} ({pct:.0f}%)\n"
+                    f"<code>{filename}</code>"
+                )
+            except Exception:
+                pass
+
+        await pyro.download_media(
+            message=await pyro.get_messages(message.chat.id, message.message_id),
+            file_name=str(input_path),
+            progress=progress,
+        )
+
         download_time = time.time() - download_start
 
         await status_msg.edit_text(
@@ -189,8 +204,7 @@ async def handle_document(message: Message):
             await status_msg.edit_text(
                 f"📋 <b>Файл в очереди</b>\n"
                 f"📦 {format_size(doc.file_size)} | <code>{filename}</code>\n\n"
-                f"🔢 Позиция в очереди: <b>{position}</b>\n"
-                "Я уведомлю вас когда начнётся конвертация."
+                f"🔢 Позиция в очереди: <b>{position}</b>"
             )
 
         result = await queue.wait_for_job(job_id)
@@ -221,8 +235,7 @@ async def handle_document(message: Message):
         else:
             await status_msg.edit_text(
                 f"❌ <b>Ошибка конвертации</b>\n\n"
-                f"<code>{result.error}</code>\n\n"
-                "Попробуйте ещё раз или проверьте файл."
+                f"<code>{result.error}</code>"
             )
 
     except Exception as e:
@@ -251,11 +264,13 @@ async def handle_other(message: Message):
 
 async def main():
     logger.info("Запуск MTS→MP4 бота...")
+    await pyro.start()
     await queue.start()
     try:
         await dp.start_polling(bot, allowed_updates=["message"])
     finally:
         await queue.stop()
+        await pyro.stop()
         await bot.session.close()
 
 
