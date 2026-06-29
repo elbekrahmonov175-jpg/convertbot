@@ -1,18 +1,13 @@
+FROM aiogram/telegram-bot-api:latest AS tgapi
+
 FROM python:3.12-slim
 
-# Зависимости для сборки telegram-bot-api + ffmpeg
+COPY --from=tgapi /usr/local/bin/telegram-bot-api /usr/local/bin/telegram-bot-api
+
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    curl \
-    wget \
-    libssl-dev \
-    zlib1g-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
-# Скачиваем готовый бинарник telegram-bot-api
-RUN wget -q https://github.com/tdlib/telegram-bot-api/releases/download/v7.3/telegram-bot-api-amd64-linux -O /usr/local/bin/telegram-bot-api \
-    && chmod +x /usr/local/bin/telegram-bot-api
 
 WORKDIR /app
 
