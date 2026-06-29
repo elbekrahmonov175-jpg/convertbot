@@ -11,7 +11,6 @@ telegram-bot-api \
     --log=/tmp/tgapi.log \
     &
 
-# Ждём пока сервер поднимется
 echo "==> Ждём запуска Local API (5 сек)..."
 sleep 5
 
