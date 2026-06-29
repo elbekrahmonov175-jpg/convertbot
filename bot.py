@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
 from aiogram.enums import ParseMode
@@ -31,7 +33,25 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_FILE_SIZE_MB = 2000
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# Подключаемся к локальному Bot API Server (снимает лимит 20MB → 2000MB)
+USE_LOCAL_API = os.environ.get("USE_LOCAL_API", "true").lower() == "true"
+
+if USE_LOCAL_API:
+    local_server = TelegramAPIServer.from_base("http://localhost:8081")
+    session = AiohttpSession(api=local_server)
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=session,
+    )
+    logger.info("Используется Local Bot API Server на порту 8081")
+else:
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    logger.info("Используется стандартный Telegram Bot API")
+
 dp = Dispatcher()
 queue = ConversionQueue(max_workers=2)
 
@@ -124,7 +144,7 @@ async def handle_document(message: Message):
         await message.answer(
             f"❌ Файл слишком большой: <b>{file_size_mb:.0f} MB</b>\n"
             f"Максимум: <b>{MAX_FILE_SIZE_MB} MB</b>\n\n"
-            "⚠️ Это ограничение самого Telegram Bot API."
+            "⚠️ Это ограничение Telegram Bot API."
         )
         return
 
