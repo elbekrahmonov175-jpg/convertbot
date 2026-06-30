@@ -38,13 +38,12 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 dp = Dispatcher()
 queue = ConversionQueue(max_workers=2)
 
-# Pyrogram клиент для скачивания больших файлов
 pyro = Client(
     "convertbot",
     api_id=API_ID,
     api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
     workdir="/tmp",
-    in_memory=True,
 )
 
 
@@ -159,8 +158,6 @@ async def handle_document(message: Message):
 
     try:
         download_start = time.time()
-
-        # Скачиваем через Pyrogram (без лимита 20MB)
         last_update = [0.0]
 
         async def progress(current, total):
