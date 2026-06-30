@@ -57,7 +57,6 @@ class ConversionQueue:
         output_path: Path,
         filename: str,
     ) -> int:
-        """Добавляет задачу в очередь, возвращает позицию."""
         job = ConversionJob(
             job_id=job_id,
             user_id=user_id,
@@ -72,7 +71,6 @@ class ConversionQueue:
         return position
 
     async def wait_for_job(self, job_id: str, timeout: float = 7200.0) -> ConversionJob:
-        """Ждёт завершения задачи (до 2 часов)."""
         job = self._jobs[job_id]
         try:
             await asyncio.wait_for(job._event.wait(), timeout=timeout)
@@ -83,7 +81,6 @@ class ConversionQueue:
         return job
 
     def cancel_user_jobs(self, user_id: int) -> int:
-        """Отменяет задачи пользователя из очереди (только QUEUED)."""
         cancelled = 0
         for job in self._jobs.values():
             if job.user_id == user_id and job.status == JobStatus.QUEUED:
@@ -108,7 +105,6 @@ class ConversionQueue:
         }
 
     async def _worker(self, worker_id: int):
-        """Воркер который берёт задачи из очереди и конвертирует."""
         from converter import convert_mts_to_mp4
 
         logger.info(f"Воркер {worker_id} запущен")
@@ -116,7 +112,6 @@ class ConversionQueue:
             try:
                 job: ConversionJob = await self._queue.get()
 
-                # Пропускаем отменённые задачи
                 if job.status == JobStatus.CANCELLED:
                     self._queue.task_done()
                     continue
