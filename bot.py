@@ -7,7 +7,7 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, FSInputFile
+from aiogram.types import Message
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from pyrogram import Client
@@ -217,12 +217,31 @@ async def handle_document(message: Message):
                 "Отправляю файл..."
             )
 
-            output_file = FSInputFile(output_path, filename=Path(filename).stem + ".mp4")
-            await message.answer_document(
-                output_file,
+            # Отправка через pyrogram (MTProto) — без лимита 50 MB у обычного Bot API
+            last_upload_update = [0.0]
+
+            async def upload_progress(current, total):
+                now = time.time()
+                if now - last_upload_update[0] < 5:
+                    return
+                last_upload_update[0] = now
+                pct = current / total * 100 if total else 0
+                try:
+                    await status_msg.edit_text(
+                        f"⬆️ <b>Отправляю файл...</b>\n"
+                        f"📦 {format_size(current)} / {format_size(total)} ({pct:.0f}%)"
+                    )
+                except Exception:
+                    pass
+
+            await pyro.send_document(
+                chat_id=message.chat.id,
+                document=str(output_path),
+                file_name=Path(filename).stem + ".mp4",
                 caption=f"✅ <b>{Path(filename).stem}.mp4</b>\n"
                         f"⏱ Конвертировано за {convert_time}\n"
-                        f"📦 {format_size(output_size)}"
+                        f"📦 {format_size(output_size)}",
+                progress=upload_progress,
             )
             await status_msg.delete()
 
