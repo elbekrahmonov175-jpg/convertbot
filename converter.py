@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -11,27 +10,20 @@ async def convert_mts_to_mp4(
     output_path: Path,
     progress_callback=None,
 ) -> float:
-    """
-    Конвертирует MTS/M2TS файл в MP4.
-    Использует -c copy для максимальной скорости (без перекодирования).
-    Возвращает длительность конвертации в секундах.
-    Вызывает progress_callback(percent: float) если передан.
-    """
     import time
     start = time.time()
 
-    # Сначала получим длительность файла для прогресса
     duration_seconds = await _get_duration(input_path)
 
     cmd = [
         "ffmpeg",
-        "-y",                        # перезаписать если есть
-        "-i", str(input_path),       # входной файл
-        "-c:v", "copy",              # копировать видео без перекодирования
-        "-c:a", "aac",               # аудио в AAC (совместимо с MP4)
-        "-b:a", "192k",              # битрейт аудио
-        "-movflags", "+faststart",   # оптимизация для стриминга
-        "-progress", "pipe:1",       # прогресс в stdout
+        "-y",
+        "-i", str(input_path),
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-movflags", "+faststart",
+        "-progress", "pipe:1",
         "-nostats",
         str(output_path),
     ]
@@ -44,7 +36,6 @@ async def convert_mts_to_mp4(
         stderr=asyncio.subprocess.PIPE,
     )
 
-    # Читаем прогресс из stdout
     if progress_callback and duration_seconds:
         asyncio.create_task(
             _read_progress(proc.stdout, duration_seconds, progress_callback)
@@ -65,7 +56,6 @@ async def convert_mts_to_mp4(
 
 
 async def _get_duration(input_path: Path) -> float | None:
-    """Получает длительность файла через ffprobe."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffprobe",
@@ -83,7 +73,6 @@ async def _get_duration(input_path: Path) -> float | None:
 
 
 async def _read_progress(stdout, duration: float, callback):
-    """Читает прогресс из ffmpeg -progress pipe:1"""
     current_time = 0.0
     async for line in stdout:
         line = line.decode("utf-8", errors="replace").strip()
@@ -98,19 +87,15 @@ async def _read_progress(stdout, duration: float, callback):
 
 
 async def _drain(stdout):
-    """Просто читаем stdout чтобы не было deadlock."""
     async for _ in stdout:
         pass
 
 
 def _extract_ffmpeg_error(stderr_text: str) -> str:
-    """Извлекает последнюю значимую строку ошибки из вывода ffmpeg."""
     lines = [l.strip() for l in stderr_text.splitlines() if l.strip()]
-    # Ищем строки с ошибками
     error_lines = [l for l in lines if any(
         kw in l.lower() for kw in ["error", "invalid", "no such", "permission", "failed"]
     )]
     if error_lines:
         return error_lines[-1][:300]
-    # Иначе последние строки
     return "\n".join(lines[-3:])[:300] if lines else "Неизвестная ошибка ffmpeg"
