@@ -217,31 +217,16 @@ async def handle_document(message: Message):
                 "Отправляю файл..."
             )
 
-            # Отправка через pyrogram (MTProto) — без лимита 50 MB у обычного Bot API
-            last_upload_update = [0.0]
-
-            async def upload_progress(current, total):
-                now = time.time()
-                if now - last_upload_update[0] < 5:
-                    return
-                last_upload_update[0] = now
-                pct = current / total * 100 if total else 0
-                try:
-                    await status_msg.edit_text(
-                        f"⬆️ <b>Отправляю файл...</b>\n"
-                        f"📦 {format_size(current)} / {format_size(total)} ({pct:.0f}%)"
-                    )
-                except Exception:
-                    pass
-
-            await pyro.send_document(
-                chat_id=message.chat.id,
-                document=str(output_path),
-                file_name=Path(filename).stem + ".mp4",
-                caption=f"✅ <b>{Path(filename).stem}.mp4</b>\n"
-                        f"⏱ Конвертировано за {convert_time}\n"
-                        f"📦 {format_size(output_size)}",
-                progress=upload_progress,
+            await asyncio.wait_for(
+                pyro.send_document(
+                    chat_id=message.chat.id,
+                    document=str(output_path),
+                    file_name=Path(filename).stem + ".mp4",
+                    caption=f"✅ <b>{Path(filename).stem}.mp4</b>\n"
+                            f"⏱ Конвертировано за {convert_time}\n"
+                            f"📦 {format_size(output_size)}",
+                ),
+                timeout=600,
             )
             await status_msg.delete()
 
@@ -254,6 +239,12 @@ async def handle_document(message: Message):
                 f"<code>{result.error}</code>"
             )
 
+    except asyncio.TimeoutError:
+        logger.error(f"Таймаут при отправке файла {filename}")
+        await status_msg.edit_text(
+            "❌ <b>Превышено время отправки файла (10 мин)</b>\n"
+            "Попробуйте ещё раз."
+        )
     except Exception as e:
         logger.exception(f"Ошибка при обработке файла {filename}: {e}")
         await status_msg.edit_text(
