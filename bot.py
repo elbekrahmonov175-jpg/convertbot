@@ -66,7 +66,7 @@ def format_duration(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds}с"
     m, s = divmod(seconds, 60)
-    if m < 60:
+    if m < 90:
         return f"{m}м {s}с"
     h, m = divmod(m, 60)
     return f"{h}ч {m}м"
